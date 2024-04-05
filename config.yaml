@@ -1,0 +1,26 @@
+model_list:
+  - model_name: deepseek-chat
+    litellm_params: # params for litellm.completion() - https://docs.litellm.ai/docs/completion/input#input---request-body
+      model: deepseek-chat
+      api_base: https://api.deepseek.com/v1/
+      api_version: "2023-05-15"
+      azure_ad_token: sk-15965fdc55534404a68fb34b5d35f775
+      seed: 12
+      max_tokens: 20
+  - model_name: gpt-4-team2
+    litellm_params:
+      model: azure/gpt-4
+      api_key: ssk-15965fdc55534404a68fb34b5d35f775
+      api_base: https://api.deepseek.com/v1
+      temperature: 0.2
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek-chat
+      extra_headers: {"AI-Resource Group": "ishaan-resource"}
+      api_key: sk-123
+      organization: org-ikDc4ex8NB
+      temperature: 0.2
+  - model_name: mistral-7b
+    litellm_params:
+      model: ollama/mistral
+      api_base: your_ollama_api_base
