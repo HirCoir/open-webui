@@ -1,26 +1,38 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { onMount, tick, getContext } from 'svelte';
-	import { settings } from '$lib/stores';
+	import { type Model, mobile, settings, showSidebar, models, config } from '$lib/stores';
 	import { blobToFile, calculateSHA256, findWordIndices } from '$lib/utils';
+
+	import {
+		uploadDocToVectorDB,
+		uploadWebToVectorDB,
+		uploadYoutubeTranscriptionToVectorDB
+	} from '$lib/apis/rag';
+	import { SUPPORTED_FILE_TYPE, SUPPORTED_FILE_EXTENSIONS, WEBUI_BASE_URL } from '$lib/constants';
+
+	import { transcribeAudio } from '$lib/apis/audio';
 
 	import Prompts from './MessageInput/PromptCommands.svelte';
 	import Suggestions from './MessageInput/Suggestions.svelte';
-	import { uploadDocToVectorDB, uploadWebToVectorDB } from '$lib/apis/rag';
 	import AddFilesPlaceholder from '../AddFilesPlaceholder.svelte';
-	import { SUPPORTED_FILE_TYPE, SUPPORTED_FILE_EXTENSIONS } from '$lib/constants';
 	import Documents from './MessageInput/Documents.svelte';
 	import Models from './MessageInput/Models.svelte';
-	import { transcribeAudio } from '$lib/apis/audio';
 	import Tooltip from '../common/Tooltip.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
+	import InputMenu from './MessageInput/InputMenu.svelte';
+	import { t } from 'i18next';
 
 	const i18n = getContext('i18n');
 
 	export let submitPrompt: Function;
 	export let stopResponse: Function;
 
-	export let suggestionPrompts = [];
 	export let autoScroll = true;
+
+	export let atSelectedModel: Model | undefined;
+	export let selectedModels: [''];
+
 	let chatTextAreaElement: HTMLTextAreaElement;
 	let filesInputElement;
 
@@ -36,13 +48,18 @@
 
 	export let files = [];
 
-	export let fileUploadEnabled = true;
 	export let speechRecognitionEnabled = true;
+	export let webSearchEnabled = false;
 
 	export let prompt = '';
 	export let messages = [];
 
 	let speechRecognition;
+
+	let visionCapableModels = [];
+	$: visionCapableModels = [...(atSelectedModel ? [atSelectedModel] : selectedModels)].filter(
+		(model) => $models.find((m) => m.id === model)?.info?.meta?.capabilities?.vision ?? true
+	);
 
 	$: if (prompt) {
 		if (chatTextAreaElement) {
@@ -290,10 +307,45 @@
 		}
 	};
 
+	const uploadYoutubeTranscription = async (url) => {
+		console.log(url);
+
+		const doc = {
+			type: 'doc',
+			name: url,
+			collection_name: '',
+			upload_status: false,
+			url: url,
+			error: ''
+		};
+
+		try {
+			files = [...files, doc];
+			const res = await uploadYoutubeTranscriptionToVectorDB(localStorage.token, url);
+
+			if (res) {
+				doc.upload_status = true;
+				doc.collection_name = res.collection_name;
+				files = files;
+			}
+		} catch (e) {
+			// Remove the failed doc from the files array
+			files = files.filter((f) => f.name !== url);
+			toast.error(e);
+		}
+	};
+
 	onMount(() => {
 		window.setTimeout(() => chatTextAreaElement?.focus(), 0);
 
 		const dropZone = document.querySelector('body');
+
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') {
+				console.log('Escape');
+				dragged = false;
+			}
+		};
 
 		const onDragOver = (e) => {
 			e.preventDefault();
@@ -309,39 +361,42 @@
 			console.log(e);
 
 			if (e.dataTransfer?.files) {
-				let reader = new FileReader();
-
-				reader.onload = (event) => {
-					files = [
-						...files,
-						{
-							type: 'image',
-							url: `${event.target.result}`
-						}
-					];
-				};
-
-				const inputFiles = e.dataTransfer?.files;
+				const inputFiles = Array.from(e.dataTransfer?.files);
 
 				if (inputFiles && inputFiles.length > 0) {
-					const file = inputFiles[0];
-					console.log(file, file.name.split('.').at(-1));
-					if (['image/gif', 'image/jpeg', 'image/png'].includes(file['type'])) {
-						reader.readAsDataURL(file);
-					} else if (
-						SUPPORTED_FILE_TYPE.includes(file['type']) ||
-						SUPPORTED_FILE_EXTENSIONS.includes(file.name.split('.').at(-1))
-					) {
-						uploadDoc(file);
-					} else {
-						toast.error(
-							$i18n.t(
-								`Unknown File Type '{{file_type}}', but accepting and treating as plain text`,
-								{ file_type: file['type'] }
-							)
-						);
-						uploadDoc(file);
-					}
+					inputFiles.forEach((file) => {
+						console.log(file, file.name.split('.').at(-1));
+						if (['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(file['type'])) {
+							if (visionCapableModels.length === 0) {
+								toast.error($i18n.t('Selected model(s) do not support image inputs'));
+								return;
+							}
+							let reader = new FileReader();
+							reader.onload = (event) => {
+								files = [
+									...files,
+									{
+										type: 'image',
+										url: `${event.target.result}`
+									}
+								];
+							};
+							reader.readAsDataURL(file);
+						} else if (
+							SUPPORTED_FILE_TYPE.includes(file['type']) ||
+							SUPPORTED_FILE_EXTENSIONS.includes(file.name.split('.').at(-1))
+						) {
+							uploadDoc(file);
+						} else {
+							toast.error(
+								$i18n.t(
+									`Unknown File Type '{{file_type}}', but accepting and treating as plain text`,
+									{ file_type: file['type'] }
+								)
+							);
+							uploadDoc(file);
+						}
+					});
 				} else {
 					toast.error($i18n.t(`File not found.`));
 				}
@@ -350,11 +405,15 @@
 			dragged = false;
 		};
 
+		window.addEventListener('keydown', handleKeyDown);
+
 		dropZone?.addEventListener('dragover', onDragOver);
 		dropZone?.addEventListener('drop', onDrop);
 		dropZone?.addEventListener('dragleave', onDragLeave);
 
 		return () => {
+			window.removeEventListener('keydown', handleKeyDown);
+
 			dropZone?.removeEventListener('dragover', onDragOver);
 			dropZone?.removeEventListener('drop', onDrop);
 			dropZone?.removeEventListener('dragleave', onDragLeave);
@@ -364,7 +423,9 @@
 
 {#if dragged}
 	<div
-		class="fixed lg:w-[calc(100%-260px)] w-full h-full flex z-50 touch-none pointer-events-none"
+		class="fixed {$showSidebar
+			? 'left-0 md:left-[260px] md:w-[calc(100%-260px)]'
+			: 'left-0'}  w-full h-full flex z-50 touch-none pointer-events-none"
 		id="dropzone"
 		role="region"
 		aria-label="Drag and Drop Container"
@@ -380,11 +441,11 @@
 {/if}
 
 <div class="w-full">
-	<div class="px-2.5 -mb-0.5 mx-auto inset-x-0 bg-transparent flex justify-center">
-		<div class="flex flex-col max-w-3xl w-full">
+	<div class=" -mb-0.5 mx-auto inset-x-0 bg-transparent flex justify-center">
+		<div class="flex flex-col max-w-6xl px-2.5 md:px-6 w-full">
 			<div class="relative">
 				{#if autoScroll === false && messages.length > 0}
-					<div class=" absolute -top-12 left-0 right-0 flex justify-center">
+					<div class=" absolute -top-12 left-0 right-0 flex justify-center z-30">
 						<button
 							class=" bg-white border border-gray-100 dark:border-none dark:bg-white/20 p-1.5 rounded-full"
 							on:click={() => {
@@ -416,6 +477,10 @@
 					<Documents
 						bind:this={documentsElement}
 						bind:prompt
+						on:youtube={(e) => {
+							console.log(e);
+							uploadYoutubeTranscription(e.detail);
+						}}
 						on:url={(e) => {
 							console.log(e);
 							uploadWeb(e.detail);
@@ -432,72 +497,115 @@
 							];
 						}}
 					/>
-				{:else if prompt.charAt(0) === '@'}
-					<Models
-						bind:this={modelsElement}
-						bind:prompt
-						bind:user
-						bind:chatInputPlaceholder
-						{messages}
-					/>
 				{/if}
 
-				{#if messages.length == 0 && suggestionPrompts.length !== 0}
-					<Suggestions {suggestionPrompts} {submitPrompt} />
+				<Models
+					bind:this={modelsElement}
+					bind:prompt
+					bind:user
+					bind:chatInputPlaceholder
+					{messages}
+					on:select={(e) => {
+						atSelectedModel = e.detail;
+						chatTextAreaElement?.focus();
+					}}
+				/>
+
+				{#if atSelectedModel !== undefined}
+					<div
+						class="px-3 py-2.5 text-left w-full flex justify-between items-center absolute bottom-0 left-0 right-0 bg-gradient-to-t from-50% from-white dark:from-gray-900"
+					>
+						<div class="flex items-center gap-2 text-sm dark:text-gray-500">
+							<img
+								crossorigin="anonymous"
+								alt="model profile"
+								class="size-5 max-w-[28px] object-cover rounded-full"
+								src={$models.find((model) => model.id === atSelectedModel.id)?.info?.meta
+									?.profile_image_url ??
+									($i18n.language === 'dg-DG'
+										? `/doge.png`
+										: `${WEBUI_BASE_URL}/static/favicon.png`)}
+							/>
+							<div>
+								Talking to <span class=" font-medium">{atSelectedModel.name}</span>
+							</div>
+						</div>
+						<div>
+							<button
+								class="flex items-center"
+								on:click={() => {
+									atSelectedModel = undefined;
+								}}
+							>
+								<XMark />
+							</button>
+						</div>
+					</div>
 				{/if}
 			</div>
 		</div>
 	</div>
+
 	<div class="bg-white dark:bg-gray-900">
-		<div class="max-w-3xl px-2.5 mx-auto inset-x-0">
+		<div class="max-w-6xl px-2.5 md:px-6 mx-auto inset-x-0">
 			<div class=" pb-2">
 				<input
 					bind:this={filesInputElement}
 					bind:files={inputFiles}
 					type="file"
 					hidden
+					multiple
 					on:change={async () => {
-						let reader = new FileReader();
-						reader.onload = (event) => {
-							files = [
-								...files,
-								{
-									type: 'image',
-									url: `${event.target.result}`
-								}
-							];
-							inputFiles = null;
-							filesInputElement.value = '';
-						};
-
 						if (inputFiles && inputFiles.length > 0) {
-							const file = inputFiles[0];
-							if (['image/gif', 'image/jpeg', 'image/png'].includes(file['type'])) {
-								reader.readAsDataURL(file);
-							} else if (
-								SUPPORTED_FILE_TYPE.includes(file['type']) ||
-								SUPPORTED_FILE_EXTENSIONS.includes(file.name.split('.').at(-1))
-							) {
-								uploadDoc(file);
-								filesInputElement.value = '';
-							} else {
-								toast.error(
-									$i18n.t(
-										`Unknown File Type '{{file_type}}', but accepting and treating as plain text`,
-										{ file_type: file['type'] }
-									)
-								);
-								uploadDoc(file);
-								filesInputElement.value = '';
-							}
+							const _inputFiles = Array.from(inputFiles);
+							_inputFiles.forEach((file) => {
+								if (['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(file['type'])) {
+									if (visionCapableModels.length === 0) {
+										toast.error($i18n.t('Selected model(s) do not support image inputs'));
+										inputFiles = null;
+										filesInputElement.value = '';
+										return;
+									}
+									let reader = new FileReader();
+									reader.onload = (event) => {
+										files = [
+											...files,
+											{
+												type: 'image',
+												url: `${event.target.result}`
+											}
+										];
+										inputFiles = null;
+										filesInputElement.value = '';
+									};
+									reader.readAsDataURL(file);
+								} else if (
+									SUPPORTED_FILE_TYPE.includes(file['type']) ||
+									SUPPORTED_FILE_EXTENSIONS.includes(file.name.split('.').at(-1))
+								) {
+									uploadDoc(file);
+									filesInputElement.value = '';
+								} else {
+									toast.error(
+										$i18n.t(
+											`Unknown File Type '{{file_type}}', but accepting and treating as plain text`,
+											{ file_type: file['type'] }
+										)
+									);
+									uploadDoc(file);
+									filesInputElement.value = '';
+								}
+							});
 						} else {
 							toast.error($i18n.t(`File not found.`));
 						}
 					}}
 				/>
 				<form
-					class=" flex flex-col relative w-full rounded-3xl px-1.5 border border-gray-100 dark:border-gray-850 bg-white dark:bg-gray-900 dark:text-gray-100"
+					dir={$settings?.chatDirection ?? 'LTR'}
+					class=" flex flex-col relative w-full rounded-3xl px-1.5 bg-gray-50 dark:bg-gray-850 dark:text-gray-100"
 					on:submit|preventDefault={() => {
+						// check if selectedModels support image input
 						submitPrompt(prompt, user);
 					}}
 				>
@@ -506,7 +614,32 @@
 							{#each files as file, fileIdx}
 								<div class=" relative group">
 									{#if file.type === 'image'}
-										<img src={file.url} alt="input" class=" h-16 w-16 rounded-xl object-cover" />
+										<div class="relative">
+											<img src={file.url} alt="input" class=" h-16 w-16 rounded-xl object-cover" />
+											{#if atSelectedModel ? visionCapableModels.length === 0 : selectedModels.length !== visionCapableModels.length}
+												<Tooltip
+													className=" absolute top-1 left-1"
+													content={$i18n.t('{{ models }}', {
+														models: [...(atSelectedModel ? [atSelectedModel] : selectedModels)]
+															.filter((id) => !visionCapableModels.includes(id))
+															.join(', ')
+													})}
+												>
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 24 24"
+														fill="currentColor"
+														class="size-4 fill-yellow-300"
+													>
+														<path
+															fill-rule="evenodd"
+															d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.752-2.5-2.598-4.5L9.4 3.003ZM12 8.25a.75.75 0 0 1 .75.75v3.75a.75.75 0 0 1-1.5 0V9a.75.75 0 0 1 .75-.75Zm0 8.25a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"
+															clip-rule="evenodd"
+														/>
+													</svg>
+												</Tooltip>
+											{/if}
+										</div>
 									{:else if file.type === 'doc'}
 										<div
 											class="h-16 w-[15rem] flex items-center space-x-3 px-2.5 dark:bg-gray-600 rounded-xl border border-gray-200 dark:border-none"
@@ -638,37 +771,39 @@
 					{/if}
 
 					<div class=" flex">
-						{#if fileUploadEnabled}
-							<div class=" self-end mb-2 ml-1">
-								<Tooltip content={$i18n.t('Upload files')}>
-									<button
-										class="bg-gray-50 hover:bg-gray-100 text-gray-800 dark:bg-gray-850 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-1.5"
-										type="button"
-										on:click={() => {
-											filesInputElement.click();
-										}}
+						<div class=" ml-1 self-end mb-2 flex space-x-1">
+							<InputMenu
+								bind:webSearchEnabled
+								uploadFilesHandler={() => {
+									filesInputElement.click();
+								}}
+								onClose={async () => {
+									await tick();
+									chatTextAreaElement?.focus();
+								}}
+							>
+								<button
+									class="bg-gray-50 hover:bg-gray-100 text-gray-800 dark:bg-gray-850 dark:text-white dark:hover:bg-gray-800 transition rounded-full p-1.5 outline-none focus:outline-none"
+									type="button"
+								>
+									<svg
+										xmlns="http://www.w3.org/2000/svg"
+										viewBox="0 0 16 16"
+										fill="currentColor"
+										class="size-5"
 									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 16 16"
-											fill="currentColor"
-											class="w-[1.2rem] h-[1.2rem]"
-										>
-											<path
-												d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"
-											/>
-										</svg>
-									</button>
-								</Tooltip>
-							</div>
-						{/if}
+										<path
+											d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"
+										/>
+									</svg>
+								</button>
+							</InputMenu>
+						</div>
 
 						<textarea
 							id="chat-textarea"
 							bind:this={chatTextAreaElement}
-							class=" dark:bg-gray-900 dark:text-gray-100 outline-none w-full py-3 px-3 {fileUploadEnabled
-								? ''
-								: ' pl-4'} rounded-xl resize-none h-[48px]"
+							class="scrollbar-hidden bg-gray-50 dark:bg-gray-850 dark:text-gray-100 outline-none w-full py-3 px-3 rounded-xl resize-none h-[48px]"
 							placeholder={chatInputPlaceholder !== ''
 								? chatInputPlaceholder
 								: isRecording
@@ -676,11 +811,23 @@
 								: $i18n.t('Send a Message')}
 							bind:value={prompt}
 							on:keypress={(e) => {
-								if (e.keyCode == 13 && !e.shiftKey) {
-									e.preventDefault();
-								}
-								if (prompt !== '' && e.keyCode == 13 && !e.shiftKey) {
-									submitPrompt(prompt, user);
+								if (
+									!$mobile ||
+									!(
+										'ontouchstart' in window ||
+										navigator.maxTouchPoints > 0 ||
+										navigator.msMaxTouchPoints > 0
+									)
+								) {
+									// Prevent Enter key from creating a new line
+									if (e.key === 'Enter' && !e.shiftKey) {
+										e.preventDefault();
+									}
+
+									// Submit the prompt when Enter key is pressed
+									if (prompt !== '' && e.key === 'Enter' && !e.shiftKey) {
+										submitPrompt(prompt, user);
+									}
 								}
 							}}
 							on:keydown={async (e) => {
@@ -744,7 +891,13 @@
 										...document.getElementsByClassName('selected-command-option-button')
 									]?.at(-1);
 
-									commandOptionButton?.click();
+									if (e.shiftKey) {
+										prompt = `${prompt}\n`;
+									} else if (commandOptionButton) {
+										commandOptionButton?.click();
+									} else {
+										document.getElementById('send-message-button')?.click();
+									}
 								}
 
 								if (['/', '#', '@'].includes(prompt.charAt(0)) && e.key === 'Tab') {
@@ -772,6 +925,14 @@
 										e.preventDefault();
 										e.target.setSelectionRange(word?.startIndex, word.endIndex + 1);
 									}
+
+									e.target.style.height = '';
+									e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+								}
+
+								if (e.key === 'Escape') {
+									console.log('Escape');
+									atSelectedModel = undefined;
 								}
 							}}
 							rows="1"
@@ -883,9 +1044,10 @@
 
 								<Tooltip content={$i18n.t('Send message')}>
 									<button
+										id="send-message-button"
 										class="{prompt !== ''
 											? 'bg-black text-white hover:bg-gray-900 dark:bg-white dark:text-black dark:hover:bg-gray-100 '
-											: 'text-white bg-gray-100 dark:text-gray-900 dark:bg-gray-800 disabled'} transition rounded-full p-1.5 self-center"
+											: 'text-white bg-gray-200 dark:text-gray-900 dark:bg-gray-700 disabled'} transition rounded-full p-1.5 self-center"
 										type="submit"
 										disabled={prompt === ''}
 									>
@@ -933,3 +1095,14 @@
 		</div>
 	</div>
 </div>
+
+<style>
+	.scrollbar-hidden:active::-webkit-scrollbar-thumb,
+	.scrollbar-hidden:focus::-webkit-scrollbar-thumb,
+	.scrollbar-hidden:hover::-webkit-scrollbar-thumb {
+		visibility: visible;
+	}
+	.scrollbar-hidden::-webkit-scrollbar-thumb {
+		visibility: hidden;
+	}
+</style>

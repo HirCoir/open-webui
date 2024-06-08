@@ -83,9 +83,9 @@ export const downloadDatabase = async (token: string) => {
 			Authorization: `Bearer ${token}`
 		}
 	})
-		.then((response) => {
+		.then(async (response) => {
 			if (!response.ok) {
-				throw new Error('Network response was not ok');
+				throw await response.json();
 			}
 			return response.blob();
 		})
@@ -100,7 +100,47 @@ export const downloadDatabase = async (token: string) => {
 		})
 		.catch((err) => {
 			console.log(err);
-			error = err;
+			error = err.detail;
 			return null;
 		});
+
+	if (error) {
+		throw error;
+	}
+};
+
+export const downloadLiteLLMConfig = async (token: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/utils/litellm/config`, {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	})
+		.then(async (response) => {
+			if (!response.ok) {
+				throw await response.json();
+			}
+			return response.blob();
+		})
+		.then((blob) => {
+			const url = window.URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = 'config.yaml';
+			document.body.appendChild(a);
+			a.click();
+			window.URL.revokeObjectURL(url);
+		})
+		.catch((err) => {
+			console.log(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
 };

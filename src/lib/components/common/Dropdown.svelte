@@ -4,13 +4,17 @@
 
 	import { flyAndScale } from '$lib/utils/transitions';
 
+	export let show = false;
 	const dispatch = createEventDispatcher();
 </script>
 
 <DropdownMenu.Root
+	bind:open={show}
+	closeFocus={false}
 	onOpenChange={(state) => {
 		dispatch('change', state);
 	}}
+	typeahead={false}
 >
 	<DropdownMenu.Trigger>
 		<slot />

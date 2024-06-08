@@ -3,9 +3,7 @@
 	import { toast } from 'svelte-sonner';
 	import { models, settings, user } from '$lib/stores';
 
-	import { getOllamaModels } from '$lib/apis/ollama';
-	import { getOpenAIModels } from '$lib/apis/openai';
-	import { getLiteLLMModels } from '$lib/apis/litellm';
+	import { getModels as _getModels } from '$lib/apis';
 
 	import Modal from '../common/Modal.svelte';
 	import Account from './Settings/Account.svelte';
@@ -17,6 +15,9 @@
 	import Chats from './Settings/Chats.svelte';
 	import Connections from './Settings/Connections.svelte';
 	import Images from './Settings/Images.svelte';
+	import User from '../icons/User.svelte';
+	import Personalization from './Settings/Personalization.svelte';
+	import { updateUserSettings } from '$lib/apis/users';
 
 	const i18n = getContext('i18n');
 
@@ -26,41 +27,19 @@
 		console.log(updated);
 		await settings.set({ ...$settings, ...updated });
 		await models.set(await getModels());
-		localStorage.setItem('settings', JSON.stringify($settings));
+		await updateUserSettings(localStorage.token, { ui: $settings });
+	};
+
+	const getModels = async () => {
+		return await _getModels(localStorage.token);
 	};
 
 	let selectedTab = 'general';
-
-	const getModels = async () => {
-		let models = await Promise.all([
-			await getOllamaModels(localStorage.token).catch((error) => {
-				console.log(error);
-				return null;
-			}),
-			await getOpenAIModels(localStorage.token).catch((error) => {
-				console.log(error);
-				return null;
-			}),
-			await getLiteLLMModels(localStorage.token).catch((error) => {
-				console.log(error);
-				return null;
-			})
-		]);
-
-		models = models
-			.filter((models) => models)
-			.reduce((a, e, i, arr) => a.concat(e, ...(i < arr.length - 1 ? [{ name: 'hr' }] : [])), []);
-
-		// models.push(...(ollamaModels ? [{ name: 'hr' }, ...ollamaModels] : []));
-		// models.push(...(openAIModels ? [{ name: 'hr' }, ...openAIModels] : []));
-		// models.push(...(liteLLMModels ? [{ name: 'hr' }, ...liteLLMModels] : []));
-		return models;
-	};
 </script>
 
 <Modal bind:show>
-	<div>
-		<div class=" flex justify-between dark:text-gray-300 px-5 py-4">
+	<div class="text-gray-700 dark:text-gray-100">
+		<div class=" flex justify-between dark:text-gray-300 px-5 pt-4 pb-1">
 			<div class=" text-lg font-medium self-center">{$i18n.t('Settings')}</div>
 			<button
 				class="self-center"
@@ -80,7 +59,6 @@
 				</svg>
 			</button>
 		</div>
-		<hr class=" dark:border-gray-800" />
 
 		<div class="flex flex-col md:flex-row w-full p-4 md:space-x-4">
 			<div
@@ -188,6 +166,21 @@
 						</svg>
 					</div>
 					<div class=" self-center">{$i18n.t('Interface')}</div>
+				</button>
+
+				<button
+					class="px-2.5 py-2.5 min-w-fit rounded-lg flex-1 md:flex-none flex text-right transition {selectedTab ===
+					'personalization'
+						? 'bg-gray-200 dark:bg-gray-700'
+						: ' hover:bg-gray-300 dark:hover:bg-gray-800'}"
+					on:click={() => {
+						selectedTab = 'personalization';
+					}}
+				>
+					<div class=" self-center mr-2">
+						<User />
+					</div>
+					<div class=" self-center">{$i18n.t('Personalization')}</div>
 				</button>
 
 				<button
@@ -323,7 +316,7 @@
 					<div class=" self-center">{$i18n.t('About')}</div>
 				</button>
 			</div>
-			<div class="flex-1 md:min-h-[25rem]">
+			<div class="flex-1 md:min-h-[28rem]">
 				{#if selectedTab === 'general'}
 					<General
 						{getModels}
@@ -343,6 +336,13 @@
 					/>
 				{:else if selectedTab === 'interface'}
 					<Interface
+						{saveSettings}
+						on:save={() => {
+							toast.success($i18n.t('Settings saved successfully!'));
+						}}
+					/>
+				{:else if selectedTab === 'personalization'}
+					<Personalization
 						{saveSettings}
 						on:save={() => {
 							toast.success($i18n.t('Settings saved successfully!'));
